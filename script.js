@@ -6,7 +6,6 @@
     var STORAGE_KEYS = {
         users: 'watchearn_users',
         currentUser: 'watchearn_current_user',
-        authToken: 'watchearn_auth_token',
         pendingPayments: 'watchearn_pending_payments',
         points: 'watchearn_points',
         videosWatched: 'watchearn_videos_watched',
@@ -15,39 +14,6 @@
         todayDate: 'watchearn_today_date',
         withdrawals: 'watchearn_withdrawals'
     };
-
-    function getAuthToken() {
-        return localStorage.getItem(STORAGE_KEYS.authToken);
-    }
-
-    function setAuthToken(token) {
-        if (token) {
-            localStorage.setItem(STORAGE_KEYS.authToken, token);
-        } else {
-            localStorage.removeItem(STORAGE_KEYS.authToken);
-        }
-    }
-
-    function apiFetch(endpoint, options) {
-        options = options || {};
-        options.headers = options.headers || {};
-        var token = getAuthToken();
-        if (token) {
-            options.headers['Authorization'] = 'Bearer ' + token;
-        }
-        if (!(options.body instanceof FormData)) {
-            options.headers['Content-Type'] = 'application/json';
-        }
-
-        return fetch(API_BASE_URL + endpoint, options)
-            .then(function(res) {
-                if (res.status === 401) {
-                    logout();
-                    throw new Error('Unauthorized');
-                }
-                return res.json();
-            });
-    }
 
     var POINTS_PER_PKR_BASIC = 100;
     var POINTS_PER_PKR_STANDARD = 150;
@@ -138,28 +104,6 @@
         }
         var users = getUsers();
         state.currentUser = users[email] || null;
-    }
-
-    function syncUserWithServer(done) {
-        var email = getCurrentUserEmail();
-        if (!email || !getAuthToken()) {
-            if (done) done();
-            return;
-        }
-
-        apiFetch('/api/users/' + encodeURIComponent(email))
-            .then(function(data) {
-                if (data && data.user) {
-                    var users = getUsers();
-                    users[email] = data.user;
-                    saveUsers(users);
-                    loadCurrentUser();
-                }
-                if (done) done();
-            })
-            .catch(function() {
-                if (done) done();
-            });
     }
 
     function showScreen(id) {
@@ -301,39 +245,40 @@
             return;
         }
 
-        apiFetch('/api/auth/login', {
-            method: 'POST',
-            body: JSON.stringify({ email: email, password: password })
-        })
-        .then(function(data) {
-            if (data.error) {
-                showAuthMessage('auth-message', data.error, 'error');
-            } else if (data.token && data.user) {
-                setAuthToken(data.token);
-                var userEmail = data.user.email || email;
-                setCurrentUserEmail(userEmail);
-                
-                var users = getUsers();
-                users[userEmail] = data.user;
-                saveUsers(users);
-                
-                loadCurrentUser();
-                showAuthMessage('auth-message', 'Login successful! Redirecting...', 'success');
-                
-                // Reset routing flag to ensure route() executes
-                isRouting = false;
-                setTimeout(function() {
+        if (window.fetch) {
+            fetch(API_BASE_URL + '/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email, password: password })
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data.error) {
+                    showAuthMessage('auth-message', data.error, 'error');
+                } else {
+                    setCurrentUserEmail(email);
+                    var users = getUsers();
+                    users[email] = data.user; // Update local cache
+                    saveUsers(users);
+                    recordLogin(email);
+                    loadCurrentUser();
                     route();
-                }, 1000);
-            } else {
-                showAuthMessage('auth-message', 'Invalid response from server.', 'error');
-            }
-        })
-        .catch(function(err) {
-            if (err.message !== 'Unauthorized') {
-                showAuthMessage('auth-message', 'Server error. Please try again later.', 'error');
-            }
-        });
+                }
+            })
+            .catch(function() {
+                // Fallback to local storage if server is down
+                var users = getUsers();
+                var user = users[email];
+                if (!user || user.password !== password) {
+                    showAuthMessage('auth-message', 'Invalid email or password (Local Fallback).', 'error');
+                    return;
+                }
+                setCurrentUserEmail(email);
+                recordLogin(email);
+                loadCurrentUser();
+                route();
+            });
+        }
     }
 
     function handleSignup(e) {
@@ -352,46 +297,61 @@
             name: name,
             email: email,
             phone: phone,
-            password: password
+            password: password,
+            planId: null,
+            planAmount: null,
+            paymentNumber: null,
+            paymentSlip: null,
+            paymentSubmitted: false,
+            approved: false,
+            referralCode: null,
+            loginHistory: [],
+            security: {
+                pin: null,
+                twoFactor: false
+            }
         };
 
-        apiFetch('/api/auth/signup', {
-            method: 'POST',
-            body: JSON.stringify(userData)
-        })
-        .then(function(data) {
-            if (data.error) {
-                showAuthMessage('auth-message', data.error, 'error');
-            } else if (data.token && data.user) {
-                setAuthToken(data.token);
-                var userEmail = data.user.email || email;
-                setCurrentUserEmail(userEmail);
-                
-                var users = getUsers();
-                users[userEmail] = data.user;
-                saveUsers(users);
-                
-                loadCurrentUser();
-                showAuthMessage('auth-message', 'Account created successfully! Redirecting...', 'success');
-                
-                // Reset routing flag to ensure route() executes
-                isRouting = false;
-                setTimeout(function() {
+        if (window.fetch) {
+            fetch(API_BASE_URL + '/api/auth/signup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(userData)
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data.error) {
+                    showAuthMessage('auth-message', data.error, 'error');
+                } else {
+                    var users = getUsers();
+                    users[email] = userData;
+                    saveUsers(users);
+                    setCurrentUserEmail(email);
+                    recordLogin(email);
+                    loadCurrentUser();
+                    showAuthMessage('auth-message', 'Account created. Choose a plan.', 'success');
                     route();
-                }, 1500);
-            } else {
-                showAuthMessage('auth-message', 'Account created, but could not log in automatically. Please login manually.', 'error');
-            }
-        })
-        .catch(function(err) {
-            if (err.message !== 'Unauthorized') {
-                showAuthMessage('auth-message', 'Server error during signup. Please try again.', 'error');
-            }
-        });
+                }
+            })
+            .catch(function() {
+                // Fallback
+                var users = getUsers();
+                if (users[email]) {
+                    showAuthMessage('auth-message', 'This email is already registered locally.', 'error');
+                    return;
+                }
+                users[email] = userData;
+                saveUsers(users);
+                setCurrentUserEmail(email);
+                recordLogin(email);
+                loadCurrentUser();
+                showAuthMessage('auth-message', 'Account created locally (Server Down).', 'success');
+                route();
+            });
+        }
     }
 
     function logout() {
-        setAuthToken(null);
         setCurrentUserEmail(null);
         window.location.href = 'index.html';
     }
@@ -419,28 +379,33 @@
         if (!user) return;
         var email = getCurrentUserEmail();
 
-        apiFetch('/api/purchase-plan', {
-            method: 'POST',
-            body: JSON.stringify({ planId: planId, planAmount: amount })
-        })
-        .then(function(data) {
-            if (data.error) {
-                showPopup(data.error, 'error');
-            } else {
+        if (window.fetch) {
+            fetch(API_BASE_URL + '/api/users/' + encodeURIComponent(email) + '/plan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ planId: planId, planAmount: amount })
+            })
+            .then(function(res) { return res.json(); })
+            .then(function() {
                 var users = getUsers();
-                if (data.user) {
-                    users[email] = data.user;
+                if (users[email]) {
+                    users[email].planId = planId;
+                    users[email].planAmount = amount;
                     saveUsers(users);
                 }
                 loadCurrentUser();
                 route();
-            }
-        })
-        .catch(function(err) {
-            if (err.message !== 'Unauthorized') {
-                showPopup('Error saving plan. Please try again.', 'error');
-            }
-        });
+            })
+            .catch(function() {
+                // Fallback
+                var users = getUsers();
+                users[email].planId = planId;
+                users[email].planAmount = amount;
+                saveUsers(users);
+                loadCurrentUser();
+                route();
+            });
+        }
     }
 
     function handlePlanSelect(e) {
@@ -492,39 +457,51 @@
         var reader = new FileReader();
         reader.onload = function () {
             var email = getCurrentUserEmail();
-            
+            var users = getUsers();
+            users[email].paymentNumber = phone;
+            users[email].paymentSlip = reader.result;
+            users[email].paymentSubmitted = true;
+            saveUsers(users);
+
             var submissionPayload = {
+                email: email,
+                name: users[email].name,
                 phone: phone,
                 planId: user.planId,
                 planAmount: user.planAmount,
                 slipBase64: reader.result
             };
 
-            apiFetch('/api/payment-submissions', {
-                method: 'POST',
-                body: JSON.stringify(submissionPayload)
-            })
-            .then(function(data) {
-                if (data.error) {
-                    showAuthMessage('payment-message', data.error, 'error');
-                } else {
-                    var users = getUsers();
-                    if (data.user) {
-                        users[email] = data.user;
-                        saveUsers(users);
-                    }
-                    loadCurrentUser();
-                    showAuthMessage('payment-message', 'Payment submitted. Waiting for approval.', 'success');
-                    setTimeout(function () {
-                        route();
-                    }, 1500);
-                }
-            })
-            .catch(function(err) {
-                if (err.message !== 'Unauthorized') {
-                    showAuthMessage('payment-message', 'Server error. Could not submit payment.', 'error');
-                }
+            var pending = getPendingPayments();
+            pending.push({
+                email: email,
+                name: users[email].name,
+                phone: phone,
+                planId: user.planId,
+                planAmount: user.planAmount,
+                slipBase64: reader.result,
+                submittedAt: new Date().toISOString()
             });
+            savePendingPayments(pending);
+
+            loadCurrentUser();
+            showAuthMessage('payment-message', 'Payment submitted. Waiting for approval.', 'success');
+
+            if (window.fetch) {
+                fetch(API_BASE_URL + '/api/payment-submissions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(submissionPayload)
+                }).then(function (res) {
+                    if (!res.ok) throw new Error('Request failed');
+                }).catch(function () {
+                    showAuthMessage('payment-message', 'Payment saved locally, but server sync failed. Please start backend server.', 'error');
+                });
+            }
+
+            setTimeout(function () {
+                route();
+            }, 800);
         };
         reader.readAsDataURL(file);
     }
@@ -601,99 +578,85 @@
         return String(text).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
-    var isRouting = false;
     function route() {
-        if (isRouting) return;
-        isRouting = true;
+        loadCurrentUser();
+        var user = state.currentUser;
+        
+        var path = window.location.pathname;
+        // Robust page detection
+        var page = path.split('/').pop().toLowerCase();
+        // Handle query strings if present (though unlikely for file protocol)
+        page = page.split('?')[0];
 
-        syncUserWithServer(function() {
-            loadCurrentUser();
-            var user = state.currentUser;
-            
-            var path = window.location.pathname;
-            // Robust page detection
-            var page = path.split('/').pop().toLowerCase();
-            // Handle query strings if present (though unlikely for file protocol)
-            page = page.split('?')[0];
+        var isDashboard = page === 'dashboard.html' || page === 'dashboard';
+        var isVideos = page === 'videos.html' || page === 'videos';
+        var isHowItWorks = page === 'how-it-works.html' || page === 'how-it-works';
+        var isWithdraw = page === 'withdraw.html' || page === 'withdraw';
+        var isReferral = page === 'referral.html' || page === 'referral';
+        var isEditProfile = page === 'edit-profile.html' || page === 'edit-profile';
+        var isIndex = page === 'index.html' || page === '' || page === 'index';
+        var isAppPage = isDashboard || isVideos || isHowItWorks || isWithdraw || isReferral || isEditProfile;
 
-            var isDashboard = page === 'dashboard.html' || page === 'dashboard';
-            var isVideos = page === 'videos.html' || page === 'videos';
-            var isHowItWorks = page === 'how-it-works.html' || page === 'how-it-works';
-            var isWithdraw = page === 'withdraw.html' || page === 'withdraw';
-            var isReferral = page === 'referral.html' || page === 'referral';
-            var isEditProfile = page === 'edit-profile.html' || page === 'edit-profile';
-            var isIndex = page === 'index.html' || page === '' || page === 'index';
-            var isAppPage = isDashboard || isVideos || isHowItWorks || isWithdraw || isReferral || isEditProfile;
-
-            // 1. Not Logged In
-            if (!user) {
-                isRouting = false;
-                if (isAppPage) {
-                    window.location.href = 'index.html';
-                    return;
-                }
-                // On index.html, show welcome screen
-                showScreen('screen-welcome');
+        // 1. Not Logged In
+        if (!user) {
+            if (isAppPage) {
+                window.location.href = 'index.html';
                 return;
             }
+            // On index.html, show welcome screen
+            showScreen('screen-welcome');
+            return;
+        }
 
-            // 2. Plan Not Selected
-            if (!user.planId || user.planAmount == null) {
-                isRouting = false;
-                if (isAppPage) {
-                    window.location.href = 'index.html';
-                    return;
-                }
-                showScreen('screen-plans');
+        // 2. Plan Not Selected
+        if (!user.planId || user.planAmount == null) {
+            if (isAppPage) {
+                window.location.href = 'index.html';
                 return;
             }
+            showScreen('screen-plans');
+            return;
+        }
 
-            // 3. Payment Not Submitted
-            if (!user.paymentSubmitted) {
-                isRouting = false;
-                if (isAppPage) {
-                    window.location.href = 'index.html';
-                    return;
-                }
-                showPaymentScreen();
+        // 3. Payment Not Submitted
+        if (!user.paymentSubmitted) {
+            if (isAppPage) {
+                window.location.href = 'index.html';
                 return;
             }
+            showPaymentScreen();
+            return;
+        }
 
-            // 4. Not Approved
-            if (!user.approved) {
-                isRouting = false;
-                if (isAppPage) {
-                    window.location.href = 'index.html';
-                    return;
-                }
-                showScreen('screen-pending');
+        // 4. Not Approved
+        if (!user.approved) {
+            if (isAppPage) {
+                window.location.href = 'index.html';
                 return;
             }
+            showScreen('screen-pending');
+            return;
+        }
 
-            // 5. Fully Authorized
-            if (isIndex) {
-                isRouting = false;
-                // If on login page but authorized, go to dashboard
-                window.location.href = 'dashboard.html';
-                return;
-            }
-            
-            // We are on an app page, show the main content
-            showScreen('screen-main');
+        // 5. Fully Authorized
+        if (isIndex) {
+            // If on login page but authorized, go to dashboard
+            window.location.href = 'dashboard.html';
+            return;
+        }
+        
+        // We are on an app page, show the main content
+        showScreen('screen-main');
 
-            if (page === 'how-it-works.html' || page === 'how-it-works') {
-                initMainApp();
-            } else if (page === 'withdraw.html' || page === 'withdraw') {
-                 initMainApp();
-            } else if (page === 'referral.html' || page === 'referral') {
-                 initMainApp();
-            } else if (page === 'edit-profile.html' || page === 'edit-profile') {
-                 initMainApp();
-            } else {
-                 initMainApp();
-            }
-            isRouting = false;
-        });
+        if (path.endsWith('how-it-works.html')) {
+            initMainApp(); // Initialize for how-it-works
+        } else if (path.endsWith('withdraw.html')) {
+             initMainApp(); // Initialize for withdraw
+        } else if (path.endsWith('referral.html')) {
+             initMainApp(); // Initialize for referral
+        } else {
+             initMainApp(); // Fallback
+        }
     }
 
     function getPointsKey() {
