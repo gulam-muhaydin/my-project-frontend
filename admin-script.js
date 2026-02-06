@@ -70,9 +70,24 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: email })
-        }).then(function (res) {
-            done(res.ok);
-        }).catch(function () {
+        })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+            if (data.ok) {
+                // Update local cache
+                var users = getUsers();
+                if (data.user) {
+                    users[email] = data.user;
+                } else if (users[email]) {
+                    users[email].approved = true;
+                }
+                saveUsers(users);
+                done(true);
+            } else {
+                done(false);
+            }
+        })
+        .catch(function () {
             done(false);
         });
     }
@@ -87,9 +102,25 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: email })
-        }).then(function (res) {
-            done(res.ok);
-        }).catch(function () {
+        })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+            if (data.ok) {
+                // Update local cache
+                var users = getUsers();
+                if (data.user) {
+                    users[email] = data.user;
+                } else if (users[email]) {
+                    users[email].paymentSubmitted = false;
+                    users[email].paymentSlip = null;
+                }
+                saveUsers(users);
+                done(true);
+            } else {
+                done(false);
+            }
+        })
+        .catch(function () {
             done(false);
         });
     }
@@ -177,33 +208,24 @@
     function approveUser(email) {
         if (!confirm('Are you sure you want to approve ' + email + '?')) return;
 
-        adminApproveAsync(email, function () {
-            var users = getUsers();
-            if (users[email]) {
-                users[email].approved = true;
-                saveUsers(users);
+        adminApproveAsync(email, function (success) {
+            if (success) {
+                renderDashboard();
+            } else {
+                alert('Failed to approve user. Please try again.');
             }
-
-            var pending = getPendingPayments().filter(function (p) { return p.email !== email; });
-            savePendingPayments(pending);
-            renderDashboard();
         });
     }
 
     function rejectUser(email) {
         if (!confirm('Are you sure you want to reject ' + email + '?')) return;
 
-        adminRejectAsync(email, function () {
-            var users = getUsers();
-            if (users[email]) {
-                users[email].paymentSubmitted = false;
-                users[email].paymentSlip = null;
-                saveUsers(users);
+        adminRejectAsync(email, function (success) {
+            if (success) {
+                renderDashboard();
+            } else {
+                alert('Failed to reject user. Please try again.');
             }
-
-            var pending = getPendingPayments().filter(function (p) { return p.email !== email; });
-            savePendingPayments(pending);
-            renderDashboard();
         });
     }
 

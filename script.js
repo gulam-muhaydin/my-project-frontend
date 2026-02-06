@@ -106,6 +106,29 @@
         state.currentUser = users[email] || null;
     }
 
+    function syncUserWithServer(done) {
+        var email = getCurrentUserEmail();
+        if (!email || !window.fetch) {
+            if (done) done();
+            return;
+        }
+
+        fetch(API_BASE_URL + '/api/users/' + encodeURIComponent(email))
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data && data.user) {
+                    var users = getUsers();
+                    users[email] = data.user;
+                    saveUsers(users);
+                    loadCurrentUser();
+                }
+                if (done) done();
+            })
+            .catch(function() {
+                if (done) done();
+            });
+    }
+
     function showScreen(id) {
         var screens = ['screen-welcome', 'screen-plans', 'screen-payment', 'screen-pending', 'screen-main', 'screen-admin'];
         screens.forEach(function (sid) {
@@ -257,26 +280,17 @@
                     showAuthMessage('auth-message', data.error, 'error');
                 } else {
                     setCurrentUserEmail(email);
+                    // Sync user data to local storage only as a cache, do not rely on local storage for auth logic
                     var users = getUsers();
-                    users[email] = data.user; // Update local cache
+                    users[email] = data.user;
                     saveUsers(users);
-                    recordLogin(email);
+                    
                     loadCurrentUser();
                     route();
                 }
             })
             .catch(function() {
-                // Fallback to local storage if server is down
-                var users = getUsers();
-                var user = users[email];
-                if (!user || user.password !== password) {
-                    showAuthMessage('auth-message', 'Invalid email or password (Local Fallback).', 'error');
-                    return;
-                }
-                setCurrentUserEmail(email);
-                recordLogin(email);
-                loadCurrentUser();
-                route();
+                showAuthMessage('auth-message', 'Server error. Please try again later.', 'error');
             });
         }
     }
@@ -323,30 +337,19 @@
                 if (data.error) {
                     showAuthMessage('auth-message', data.error, 'error');
                 } else {
-                    var users = getUsers();
-                    users[email] = userData;
-                    saveUsers(users);
                     setCurrentUserEmail(email);
-                    recordLogin(email);
+                    // Cache the user data
+                    var users = getUsers();
+                    users[email] = data.user || userData;
+                    saveUsers(users);
+                    
                     loadCurrentUser();
                     showAuthMessage('auth-message', 'Account created. Choose a plan.', 'success');
                     route();
                 }
             })
             .catch(function() {
-                // Fallback
-                var users = getUsers();
-                if (users[email]) {
-                    showAuthMessage('auth-message', 'This email is already registered locally.', 'error');
-                    return;
-                }
-                users[email] = userData;
-                saveUsers(users);
-                setCurrentUserEmail(email);
-                recordLogin(email);
-                loadCurrentUser();
-                showAuthMessage('auth-message', 'Account created locally (Server Down).', 'success');
-                route();
+                showAuthMessage('auth-message', 'Server error during signup. Please try again.', 'error');
             });
         }
     }
@@ -386,24 +389,22 @@
                 body: JSON.stringify({ planId: planId, planAmount: amount })
             })
             .then(function(res) { return res.json(); })
-            .then(function() {
-                var users = getUsers();
-                if (users[email]) {
-                    users[email].planId = planId;
-                    users[email].planAmount = amount;
-                    saveUsers(users);
+            .then(function(data) {
+                if (data.error) {
+                    showPopup(data.error, 'error');
+                } else {
+                    // Cache only
+                    var users = getUsers();
+                    if (data.user) {
+                        users[email] = data.user;
+                        saveUsers(users);
+                    }
+                    loadCurrentUser();
+                    route();
                 }
-                loadCurrentUser();
-                route();
             })
             .catch(function() {
-                // Fallback
-                var users = getUsers();
-                users[email].planId = planId;
-                users[email].planAmount = amount;
-                saveUsers(users);
-                loadCurrentUser();
-                route();
+                showPopup('Error saving plan. Please try again.', 'error');
             });
         }
     }
@@ -457,51 +458,47 @@
         var reader = new FileReader();
         reader.onload = function () {
             var email = getCurrentUserEmail();
-            var users = getUsers();
-            users[email].paymentNumber = phone;
-            users[email].paymentSlip = reader.result;
-            users[email].paymentSubmitted = true;
-            saveUsers(users);
-
+            
             var submissionPayload = {
                 email: email,
-                name: users[email].name,
+                name: user.name || 'User',
                 phone: phone,
                 planId: user.planId,
                 planAmount: user.planAmount,
                 slipBase64: reader.result
             };
 
-            var pending = getPendingPayments();
-            pending.push({
-                email: email,
-                name: users[email].name,
-                phone: phone,
-                planId: user.planId,
-                planAmount: user.planAmount,
-                slipBase64: reader.result,
-                submittedAt: new Date().toISOString()
-            });
-            savePendingPayments(pending);
-
-            loadCurrentUser();
-            showAuthMessage('payment-message', 'Payment submitted. Waiting for approval.', 'success');
-
             if (window.fetch) {
                 fetch(API_BASE_URL + '/api/payment-submissions', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(submissionPayload)
-                }).then(function (res) {
+                })
+                .then(function (res) {
                     if (!res.ok) throw new Error('Request failed');
-                }).catch(function () {
-                    showAuthMessage('payment-message', 'Payment saved locally, but server sync failed. Please start backend server.', 'error');
+                    return res.json();
+                })
+                .then(function(data) {
+                    if (data.error) {
+                        showAuthMessage('payment-message', data.error, 'error');
+                    } else {
+                        // Cache only
+                        var users = getUsers();
+                        if (data.user) {
+                            users[email] = data.user;
+                            saveUsers(users);
+                        }
+                        loadCurrentUser();
+                        showAuthMessage('payment-message', 'Payment submitted. Waiting for approval.', 'success');
+                        setTimeout(function () {
+                            route();
+                        }, 1500);
+                    }
+                })
+                .catch(function () {
+                    showAuthMessage('payment-message', 'Server error. Could not submit payment.', 'error');
                 });
             }
-
-            setTimeout(function () {
-                route();
-            }, 800);
         };
         reader.readAsDataURL(file);
     }
@@ -578,85 +575,99 @@
         return String(text).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
+    var isRouting = false;
     function route() {
-        loadCurrentUser();
-        var user = state.currentUser;
-        
-        var path = window.location.pathname;
-        // Robust page detection
-        var page = path.split('/').pop().toLowerCase();
-        // Handle query strings if present (though unlikely for file protocol)
-        page = page.split('?')[0];
+        if (isRouting) return;
+        isRouting = true;
 
-        var isDashboard = page === 'dashboard.html' || page === 'dashboard';
-        var isVideos = page === 'videos.html' || page === 'videos';
-        var isHowItWorks = page === 'how-it-works.html' || page === 'how-it-works';
-        var isWithdraw = page === 'withdraw.html' || page === 'withdraw';
-        var isReferral = page === 'referral.html' || page === 'referral';
-        var isEditProfile = page === 'edit-profile.html' || page === 'edit-profile';
-        var isIndex = page === 'index.html' || page === '' || page === 'index';
-        var isAppPage = isDashboard || isVideos || isHowItWorks || isWithdraw || isReferral || isEditProfile;
+        syncUserWithServer(function() {
+            loadCurrentUser();
+            var user = state.currentUser;
+            
+            var path = window.location.pathname;
+            // Robust page detection
+            var page = path.split('/').pop().toLowerCase();
+            // Handle query strings if present (though unlikely for file protocol)
+            page = page.split('?')[0];
 
-        // 1. Not Logged In
-        if (!user) {
-            if (isAppPage) {
-                window.location.href = 'index.html';
+            var isDashboard = page === 'dashboard.html' || page === 'dashboard';
+            var isVideos = page === 'videos.html' || page === 'videos';
+            var isHowItWorks = page === 'how-it-works.html' || page === 'how-it-works';
+            var isWithdraw = page === 'withdraw.html' || page === 'withdraw';
+            var isReferral = page === 'referral.html' || page === 'referral';
+            var isEditProfile = page === 'edit-profile.html' || page === 'edit-profile';
+            var isIndex = page === 'index.html' || page === '' || page === 'index';
+            var isAppPage = isDashboard || isVideos || isHowItWorks || isWithdraw || isReferral || isEditProfile;
+
+            // 1. Not Logged In
+            if (!user) {
+                isRouting = false;
+                if (isAppPage) {
+                    window.location.href = 'index.html';
+                    return;
+                }
+                // On index.html, show welcome screen
+                showScreen('screen-welcome');
                 return;
             }
-            // On index.html, show welcome screen
-            showScreen('screen-welcome');
-            return;
-        }
 
-        // 2. Plan Not Selected
-        if (!user.planId || user.planAmount == null) {
-            if (isAppPage) {
-                window.location.href = 'index.html';
+            // 2. Plan Not Selected
+            if (!user.planId || user.planAmount == null) {
+                isRouting = false;
+                if (isAppPage) {
+                    window.location.href = 'index.html';
+                    return;
+                }
+                showScreen('screen-plans');
                 return;
             }
-            showScreen('screen-plans');
-            return;
-        }
 
-        // 3. Payment Not Submitted
-        if (!user.paymentSubmitted) {
-            if (isAppPage) {
-                window.location.href = 'index.html';
+            // 3. Payment Not Submitted
+            if (!user.paymentSubmitted) {
+                isRouting = false;
+                if (isAppPage) {
+                    window.location.href = 'index.html';
+                    return;
+                }
+                showPaymentScreen();
                 return;
             }
-            showPaymentScreen();
-            return;
-        }
 
-        // 4. Not Approved
-        if (!user.approved) {
-            if (isAppPage) {
-                window.location.href = 'index.html';
+            // 4. Not Approved
+            if (!user.approved) {
+                isRouting = false;
+                if (isAppPage) {
+                    window.location.href = 'index.html';
+                    return;
+                }
+                showScreen('screen-pending');
                 return;
             }
-            showScreen('screen-pending');
-            return;
-        }
 
-        // 5. Fully Authorized
-        if (isIndex) {
-            // If on login page but authorized, go to dashboard
-            window.location.href = 'dashboard.html';
-            return;
-        }
-        
-        // We are on an app page, show the main content
-        showScreen('screen-main');
+            // 5. Fully Authorized
+            if (isIndex) {
+                isRouting = false;
+                // If on login page but authorized, go to dashboard
+                window.location.href = 'dashboard.html';
+                return;
+            }
+            
+            // We are on an app page, show the main content
+            showScreen('screen-main');
 
-        if (path.endsWith('how-it-works.html')) {
-            initMainApp(); // Initialize for how-it-works
-        } else if (path.endsWith('withdraw.html')) {
-             initMainApp(); // Initialize for withdraw
-        } else if (path.endsWith('referral.html')) {
-             initMainApp(); // Initialize for referral
-        } else {
-             initMainApp(); // Fallback
-        }
+            if (page === 'how-it-works.html' || page === 'how-it-works') {
+                initMainApp();
+            } else if (page === 'withdraw.html' || page === 'withdraw') {
+                 initMainApp();
+            } else if (page === 'referral.html' || page === 'referral') {
+                 initMainApp();
+            } else if (page === 'edit-profile.html' || page === 'edit-profile') {
+                 initMainApp();
+            } else {
+                 initMainApp();
+            }
+            isRouting = false;
+        });
     }
 
     function getPointsKey() {
@@ -1083,12 +1094,12 @@
         if (el) el.textContent = 'PKR ' + state.points.toLocaleString();
     }
 
-    var REFERRAL_BASE_URL = window.location.origin;
+    var REFERRAL_BASE_URL = 'https://videowatchhub.vercel.app';
 
     function getReferralCode(user) {
         if (user.referralCode) return user.referralCode;
         // Generate a simple code if not exists
-        var code = 'WE-' + user.name.substring(0, 3).toUpperCase() + Math.floor(1000 + Math.random() * 9000);
+        var code = 'WE-' + (user.name ? user.name.substring(0, 3).toUpperCase() : 'USER') + Math.floor(1000 + Math.random() * 9000);
         user.referralCode = code;
         // Save user back
         var users = getUsers();
@@ -1284,7 +1295,7 @@
         updateRedeemableDisplay();
         
         // Withdraw Page Init
-        if (window.location.pathname.endsWith('withdraw.html')) {
+        if (window.location.pathname.endsWith('withdraw.html') || window.location.pathname.endsWith('withdraw')) {
             updateWithdrawBalance();
             renderWithdrawHistory();
             var withdrawForm = document.getElementById('form-withdraw');
@@ -1296,12 +1307,12 @@
         }
         
         // Referral Page Init
-        if (window.location.pathname.endsWith('referral.html')) {
+        if (window.location.pathname.endsWith('referral.html') || window.location.pathname.endsWith('referral')) {
             initReferralPage();
         }
 
         // Edit Profile Page Init
-        if (window.location.pathname.endsWith('edit-profile.html')) {
+        if (window.location.pathname.endsWith('edit-profile.html') || window.location.pathname.endsWith('edit-profile')) {
             initEditProfilePage();
         }
 
