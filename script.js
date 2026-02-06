@@ -588,13 +588,14 @@
         // Handle query strings if present (though unlikely for file protocol)
         page = page.split('?')[0];
 
-        var isDashboard = page === 'dashboard.html';
-        var isVideos = page === 'videos.html';
-        var isHowItWorks = page === 'how-it-works.html';
-        var isWithdraw = page === 'withdraw.html';
-        var isReferral = page === 'referral.html';
+        var isDashboard = page === 'dashboard.html' || page === 'dashboard';
+        var isVideos = page === 'videos.html' || page === 'videos';
+        var isHowItWorks = page === 'how-it-works.html' || page === 'how-it-works';
+        var isWithdraw = page === 'withdraw.html' || page === 'withdraw';
+        var isReferral = page === 'referral.html' || page === 'referral';
+        var isEditProfile = page === 'edit-profile.html' || page === 'edit-profile';
         var isIndex = page === 'index.html' || page === '' || page === 'index';
-        var isAppPage = isDashboard || isVideos || isHowItWorks || isWithdraw || isReferral;
+        var isAppPage = isDashboard || isVideos || isHowItWorks || isWithdraw || isReferral || isEditProfile;
 
         // 1. Not Logged In
         if (!user) {
@@ -1082,7 +1083,7 @@
         if (el) el.textContent = 'PKR ' + state.points.toLocaleString();
     }
 
-    var REFERRAL_BASE_URL = 'https://watchearnzone.online';
+    var REFERRAL_BASE_URL = window.location.origin;
 
     function getReferralCode(user) {
         if (user.referralCode) return user.referralCode;
