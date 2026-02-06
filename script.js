@@ -6,6 +6,7 @@
     var STORAGE_KEYS = {
         users: 'watchearn_users',
         currentUser: 'watchearn_current_user',
+        authToken: 'watchearn_auth_token',
         pendingPayments: 'watchearn_pending_payments',
         points: 'watchearn_points',
         videosWatched: 'watchearn_videos_watched',
@@ -14,6 +15,39 @@
         todayDate: 'watchearn_today_date',
         withdrawals: 'watchearn_withdrawals'
     };
+
+    function getAuthToken() {
+        return localStorage.getItem(STORAGE_KEYS.authToken);
+    }
+
+    function setAuthToken(token) {
+        if (token) {
+            localStorage.setItem(STORAGE_KEYS.authToken, token);
+        } else {
+            localStorage.removeItem(STORAGE_KEYS.authToken);
+        }
+    }
+
+    function apiFetch(endpoint, options) {
+        options = options || {};
+        options.headers = options.headers || {};
+        var token = getAuthToken();
+        if (token) {
+            options.headers['Authorization'] = 'Bearer ' + token;
+        }
+        if (!(options.body instanceof FormData)) {
+            options.headers['Content-Type'] = 'application/json';
+        }
+
+        return fetch(API_BASE_URL + endpoint, options)
+            .then(function(res) {
+                if (res.status === 401) {
+                    logout();
+                    throw new Error('Unauthorized');
+                }
+                return res.json();
+            });
+    }
 
     var POINTS_PER_PKR_BASIC = 100;
     var POINTS_PER_PKR_STANDARD = 150;
@@ -108,13 +142,12 @@
 
     function syncUserWithServer(done) {
         var email = getCurrentUserEmail();
-        if (!email || !window.fetch) {
+        if (!email || !getAuthToken()) {
             if (done) done();
             return;
         }
 
-        fetch(API_BASE_URL + '/api/users/' + encodeURIComponent(email))
-            .then(function(res) { return res.json(); })
+        apiFetch('/api/users/' + encodeURIComponent(email))
             .then(function(data) {
                 if (data && data.user) {
                     var users = getUsers();
@@ -268,31 +301,28 @@
             return;
         }
 
-        if (window.fetch) {
-            fetch(API_BASE_URL + '/api/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: email, password: password })
-            })
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                if (data.error) {
-                    showAuthMessage('auth-message', data.error, 'error');
-                } else {
-                    setCurrentUserEmail(email);
-                    // Sync user data to local storage only as a cache, do not rely on local storage for auth logic
-                    var users = getUsers();
-                    users[email] = data.user;
-                    saveUsers(users);
-                    
-                    loadCurrentUser();
-                    route();
-                }
-            })
-            .catch(function() {
+        apiFetch('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ email: email, password: password })
+        })
+        .then(function(data) {
+            if (data.error) {
+                showAuthMessage('auth-message', data.error, 'error');
+            } else {
+                setAuthToken(data.token);
+                setCurrentUserEmail(email);
+                var users = getUsers();
+                users[email] = data.user;
+                saveUsers(users);
+                loadCurrentUser();
+                route();
+            }
+        })
+        .catch(function(err) {
+            if (err.message !== 'Unauthorized') {
                 showAuthMessage('auth-message', 'Server error. Please try again later.', 'error');
-            });
-        }
+            }
+        });
     }
 
     function handleSignup(e) {
@@ -311,50 +341,36 @@
             name: name,
             email: email,
             phone: phone,
-            password: password,
-            planId: null,
-            planAmount: null,
-            paymentNumber: null,
-            paymentSlip: null,
-            paymentSubmitted: false,
-            approved: false,
-            referralCode: null,
-            loginHistory: [],
-            security: {
-                pin: null,
-                twoFactor: false
-            }
+            password: password
         };
 
-        if (window.fetch) {
-            fetch(API_BASE_URL + '/api/auth/signup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(userData)
-            })
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                if (data.error) {
-                    showAuthMessage('auth-message', data.error, 'error');
-                } else {
-                    setCurrentUserEmail(email);
-                    // Cache the user data
-                    var users = getUsers();
-                    users[email] = data.user || userData;
-                    saveUsers(users);
-                    
-                    loadCurrentUser();
-                    showAuthMessage('auth-message', 'Account created. Choose a plan.', 'success');
-                    route();
-                }
-            })
-            .catch(function() {
+        apiFetch('/api/auth/signup', {
+            method: 'POST',
+            body: JSON.stringify(userData)
+        })
+        .then(function(data) {
+            if (data.error) {
+                showAuthMessage('auth-message', data.error, 'error');
+            } else {
+                setAuthToken(data.token);
+                setCurrentUserEmail(email);
+                var users = getUsers();
+                users[email] = data.user;
+                saveUsers(users);
+                loadCurrentUser();
+                showAuthMessage('auth-message', 'Account created. Choose a plan.', 'success');
+                route();
+            }
+        })
+        .catch(function(err) {
+            if (err.message !== 'Unauthorized') {
                 showAuthMessage('auth-message', 'Server error during signup. Please try again.', 'error');
-            });
-        }
+            }
+        });
     }
 
     function logout() {
+        setAuthToken(null);
         setCurrentUserEmail(null);
         window.location.href = 'index.html';
     }
@@ -382,31 +398,28 @@
         if (!user) return;
         var email = getCurrentUserEmail();
 
-        if (window.fetch) {
-            fetch(API_BASE_URL + '/api/users/' + encodeURIComponent(email) + '/plan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ planId: planId, planAmount: amount })
-            })
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                if (data.error) {
-                    showPopup(data.error, 'error');
-                } else {
-                    // Cache only
-                    var users = getUsers();
-                    if (data.user) {
-                        users[email] = data.user;
-                        saveUsers(users);
-                    }
-                    loadCurrentUser();
-                    route();
+        apiFetch('/api/purchase-plan', {
+            method: 'POST',
+            body: JSON.stringify({ planId: planId, planAmount: amount })
+        })
+        .then(function(data) {
+            if (data.error) {
+                showPopup(data.error, 'error');
+            } else {
+                var users = getUsers();
+                if (data.user) {
+                    users[email] = data.user;
+                    saveUsers(users);
                 }
-            })
-            .catch(function() {
+                loadCurrentUser();
+                route();
+            }
+        })
+        .catch(function(err) {
+            if (err.message !== 'Unauthorized') {
                 showPopup('Error saving plan. Please try again.', 'error');
-            });
-        }
+            }
+        });
     }
 
     function handlePlanSelect(e) {
@@ -460,45 +473,37 @@
             var email = getCurrentUserEmail();
             
             var submissionPayload = {
-                email: email,
-                name: user.name || 'User',
                 phone: phone,
                 planId: user.planId,
                 planAmount: user.planAmount,
                 slipBase64: reader.result
             };
 
-            if (window.fetch) {
-                fetch(API_BASE_URL + '/api/payment-submissions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(submissionPayload)
-                })
-                .then(function (res) {
-                    if (!res.ok) throw new Error('Request failed');
-                    return res.json();
-                })
-                .then(function(data) {
-                    if (data.error) {
-                        showAuthMessage('payment-message', data.error, 'error');
-                    } else {
-                        // Cache only
-                        var users = getUsers();
-                        if (data.user) {
-                            users[email] = data.user;
-                            saveUsers(users);
-                        }
-                        loadCurrentUser();
-                        showAuthMessage('payment-message', 'Payment submitted. Waiting for approval.', 'success');
-                        setTimeout(function () {
-                            route();
-                        }, 1500);
+            apiFetch('/api/payment-submissions', {
+                method: 'POST',
+                body: JSON.stringify(submissionPayload)
+            })
+            .then(function(data) {
+                if (data.error) {
+                    showAuthMessage('payment-message', data.error, 'error');
+                } else {
+                    var users = getUsers();
+                    if (data.user) {
+                        users[email] = data.user;
+                        saveUsers(users);
                     }
-                })
-                .catch(function () {
+                    loadCurrentUser();
+                    showAuthMessage('payment-message', 'Payment submitted. Waiting for approval.', 'success');
+                    setTimeout(function () {
+                        route();
+                    }, 1500);
+                }
+            })
+            .catch(function(err) {
+                if (err.message !== 'Unauthorized') {
                     showAuthMessage('payment-message', 'Server error. Could not submit payment.', 'error');
-                });
-            }
+                }
+            });
         };
         reader.readAsDataURL(file);
     }

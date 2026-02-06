@@ -6,10 +6,44 @@
     var STORAGE_KEYS = {
         users: 'watchearn_users',
         currentUser: 'watchearn_current_user',
+        authToken: 'watchearn_auth_token',
         pendingPayments: 'watchearn_pending_payments',
-        points: 'watchearn_points', // Prefix for points
+        points: 'watchearn_points',
         adminSession: 'watchearn_admin_session'
     };
+
+    function getAuthToken() {
+        return localStorage.getItem(STORAGE_KEYS.authToken);
+    }
+
+    function setAuthToken(token) {
+        if (token) {
+            localStorage.setItem(STORAGE_KEYS.authToken, token);
+        } else {
+            localStorage.removeItem(STORAGE_KEYS.authToken);
+        }
+    }
+
+    function apiFetch(endpoint, options) {
+        options = options || {};
+        options.headers = options.headers || {};
+        var token = getAuthToken();
+        if (token) {
+            options.headers['Authorization'] = 'Bearer ' + token;
+        }
+        if (!(options.body instanceof FormData)) {
+            options.headers['Content-Type'] = 'application/json';
+        }
+
+        return fetch(API_BASE_URL + endpoint, options)
+            .then(function(res) {
+                if (res.status === 401) {
+                    logout();
+                    throw new Error('Unauthorized');
+                }
+                return res.json();
+            });
+    }
 
     var ADMIN_CREDENTIALS = {
         email: 'admin@watchearn.com',
@@ -41,13 +75,7 @@
     var lastPendingPayments = [];
 
     function getPendingPaymentsAsync(done) {
-        if (!window.fetch) {
-            done(getPendingPayments());
-            return;
-        }
-
-        fetch(API_BASE_URL + '/api/admin/pending', { method: 'GET' })
-            .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
+        apiFetch('/api/admin/pending', { method: 'GET' })
             .then(function (data) {
                 var pending = (data && data.pending) ? data.pending : [];
                 lastPendingPayments = pending;
@@ -61,20 +89,12 @@
     }
 
     function adminApproveAsync(email, done) {
-        if (!window.fetch) {
-            done(false);
-            return;
-        }
-
-        fetch(API_BASE_URL + '/api/admin/approve', {
+        apiFetch('/api/admin/approve', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: email })
         })
-        .then(function (res) { return res.json(); })
         .then(function (data) {
             if (data.ok) {
-                // Update local cache
                 var users = getUsers();
                 if (data.user) {
                     users[email] = data.user;
@@ -93,20 +113,12 @@
     }
 
     function adminRejectAsync(email, done) {
-        if (!window.fetch) {
-            done(false);
-            return;
-        }
-
-        fetch(API_BASE_URL + '/api/admin/reject', {
+        apiFetch('/api/admin/reject', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: email })
         })
-        .then(function (res) { return res.json(); })
         .then(function (data) {
             if (data.ok) {
-                // Update local cache
                 var users = getUsers();
                 if (data.user) {
                     users[email] = data.user;
@@ -165,44 +177,41 @@
         var email = document.getElementById('admin-email').value.trim().toLowerCase();
         var password = document.getElementById('admin-password').value;
 
-        // Check hardcoded credentials first
-        if (email === ADMIN_CREDENTIALS.email && password === ADMIN_CREDENTIALS.password) {
-            localStorage.setItem(STORAGE_KEYS.adminSession, 'true');
-            initDashboard();
-            return;
-        }
-
-        if (window.fetch) {
-            fetch(API_BASE_URL + '/api/admin/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: email, password: password })
-            })
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                if (data.ok) {
-                    localStorage.setItem(STORAGE_KEYS.adminSession, 'true');
-                    initDashboard();
-                } else {
-                    showAuthMessage(data.error || 'Invalid credentials', 'error');
-                }
-            })
-            .catch(function() {
-                // Fallback for offline/server down
+        apiFetch('/api/admin/login', {
+            method: 'POST',
+            body: JSON.stringify({ email: email, password: password })
+        })
+        .then(function(data) {
+            if (data.ok) {
+                setAuthToken(data.token);
+                localStorage.setItem(STORAGE_KEYS.adminSession, 'true');
+                initDashboard();
+            } else {
+                showAuthMessage(data.error || 'Invalid credentials', 'error');
+            }
+        })
+        .catch(function(err) {
+            if (err.message === 'Unauthorized') {
+                showAuthMessage('Invalid admin credentials', 'error');
+            } else {
+                // Fallback for hardcoded credentials if server is down or during development
                 if (email === ADMIN_CREDENTIALS.email && password === ADMIN_CREDENTIALS.password) {
                     localStorage.setItem(STORAGE_KEYS.adminSession, 'true');
                     initDashboard();
                 } else {
-                    showAuthMessage('Invalid admin credentials', 'error');
+                    showAuthMessage('Server error. Please try again.', 'error');
                 }
-            });
-        }
+            }
+        });
     }
 
     function logout() {
+        setAuthToken(null);
         localStorage.removeItem(STORAGE_KEYS.adminSession);
         showScreen('screen-admin-login');
-        document.getElementById('form-admin-login').reset();
+        if (document.getElementById('form-admin-login')) {
+            document.getElementById('form-admin-login').reset();
+        }
     }
 
     function approveUser(email) {
