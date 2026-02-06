@@ -308,14 +308,25 @@
         .then(function(data) {
             if (data.error) {
                 showAuthMessage('auth-message', data.error, 'error');
-            } else {
+            } else if (data.token && data.user) {
                 setAuthToken(data.token);
-                setCurrentUserEmail(email);
+                var userEmail = data.user.email || email;
+                setCurrentUserEmail(userEmail);
+                
                 var users = getUsers();
-                users[email] = data.user;
+                users[userEmail] = data.user;
                 saveUsers(users);
+                
                 loadCurrentUser();
-                route();
+                showAuthMessage('auth-message', 'Login successful! Redirecting...', 'success');
+                
+                // Reset routing flag to ensure route() executes
+                isRouting = false;
+                setTimeout(function() {
+                    route();
+                }, 1000);
+            } else {
+                showAuthMessage('auth-message', 'Invalid response from server.', 'error');
             }
         })
         .catch(function(err) {
@@ -351,15 +362,25 @@
         .then(function(data) {
             if (data.error) {
                 showAuthMessage('auth-message', data.error, 'error');
-            } else {
+            } else if (data.token && data.user) {
                 setAuthToken(data.token);
-                setCurrentUserEmail(email);
+                var userEmail = data.user.email || email;
+                setCurrentUserEmail(userEmail);
+                
                 var users = getUsers();
-                users[email] = data.user;
+                users[userEmail] = data.user;
                 saveUsers(users);
+                
                 loadCurrentUser();
-                showAuthMessage('auth-message', 'Account created. Choose a plan.', 'success');
-                route();
+                showAuthMessage('auth-message', 'Account created successfully! Redirecting...', 'success');
+                
+                // Reset routing flag to ensure route() executes
+                isRouting = false;
+                setTimeout(function() {
+                    route();
+                }, 1500);
+            } else {
+                showAuthMessage('auth-message', 'Account created, but could not log in automatically. Please login manually.', 'error');
             }
         })
         .catch(function(err) {
