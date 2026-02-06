@@ -134,6 +134,13 @@
         var email = document.getElementById('admin-email').value.trim().toLowerCase();
         var password = document.getElementById('admin-password').value;
 
+        // Check hardcoded credentials first
+        if (email === ADMIN_CREDENTIALS.email && password === ADMIN_CREDENTIALS.password) {
+            localStorage.setItem(STORAGE_KEYS.adminSession, 'true');
+            initDashboard();
+            return;
+        }
+
         if (window.fetch) {
             fetch(API_BASE_URL + '/api/admin/login', {
                 method: 'POST',
